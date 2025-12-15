@@ -35,6 +35,12 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 
 PACKAGE_NAME = "flash_attn_3"
 
+# Create package directory and __init__.py if they don't exist
+os.makedirs(os.path.join(this_dir, PACKAGE_NAME), exist_ok=True)
+pkg_init = os.path.join(this_dir, PACKAGE_NAME, "__init__.py")
+if not os.path.isfile(pkg_init):
+    shutil.copy(os.path.join(this_dir, "__init__.py"), pkg_init)
+
 BASE_WHEEL_URL = "https://github.com/Dao-AILab/flash-attention/releases/download/{tag_name}/{wheel_name}"
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels
@@ -48,23 +54,23 @@ USE_TRITON_ROCM = os.getenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", "FALSE") == "TR
 if USE_TRITON_ROCM:
     SKIP_CUDA_BUILD = True
 
-DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "FALSE") == "TRUE"
+DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "TRUE") == "TRUE"
 DISABLE_SPLIT = os.getenv("FLASH_ATTENTION_DISABLE_SPLIT", "FALSE") == "TRUE"
 DISABLE_PAGEDKV = os.getenv("FLASH_ATTENTION_DISABLE_PAGEDKV", "FALSE") == "TRUE"
 DISABLE_APPENDKV = os.getenv("FLASH_ATTENTION_DISABLE_APPENDKV", "FALSE") == "TRUE"
 DISABLE_LOCAL = os.getenv("FLASH_ATTENTION_DISABLE_LOCAL", "FALSE") == "TRUE"
 DISABLE_SOFTCAP = os.getenv("FLASH_ATTENTION_DISABLE_SOFTCAP", "FALSE") == "TRUE"
 DISABLE_PACKGQA = os.getenv("FLASH_ATTENTION_DISABLE_PACKGQA", "FALSE") == "TRUE"
-DISABLE_FP16 = os.getenv("FLASH_ATTENTION_DISABLE_FP16", "FALSE") == "TRUE"
+DISABLE_FP16 = os.getenv("FLASH_ATTENTION_DISABLE_FP16", "TRUE") == "TRUE"
 DISABLE_FP8 = os.getenv("FLASH_ATTENTION_DISABLE_FP8", "FALSE") == "TRUE"
 DISABLE_VARLEN = os.getenv("FLASH_ATTENTION_DISABLE_VARLEN", "FALSE") == "TRUE"
 DISABLE_CLUSTER = os.getenv("FLASH_ATTENTION_DISABLE_CLUSTER", "FALSE") == "TRUE"
 DISABLE_HDIM64 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM64", "FALSE") == "TRUE"
-DISABLE_HDIM96 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM96", "FALSE") == "TRUE"
+DISABLE_HDIM96 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM96", "TRUE") == "TRUE"
 DISABLE_HDIM128 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM128", "FALSE") == "TRUE"
 DISABLE_HDIM192 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM192", "FALSE") == "TRUE"
 DISABLE_HDIM256 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM256", "FALSE") == "TRUE"
-DISABLE_SM8x = os.getenv("FLASH_ATTENTION_DISABLE_SM80", "FALSE") == "TRUE"
+DISABLE_SM8x = os.getenv("FLASH_ATTENTION_DISABLE_SM80", "TRUE") == "TRUE"
 
 ENABLE_VCOLMAJOR = os.getenv("FLASH_ATTENTION_ENABLE_VCOLMAJOR", "FALSE") == "TRUE"
 

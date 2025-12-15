@@ -74,7 +74,8 @@ void set_params_fprop(Flash_fwd_params &params,
                       int window_size_right,
                       int attention_chunk,
                       const float softcap=0.f,
-                      const int sm_margin=0) {
+                      const int sm_margin=0,
+                      const int common_len=0) {
 
     // Reset the parameters
     params = {};
@@ -129,6 +130,7 @@ void set_params_fprop(Flash_fwd_params &params,
     // Set the different scale values.
     params.scale_softmax = softmax_scale;
     params.softcap = softcap;
+    params.common_len = common_len;
 
     // Set this to probability of keeping an element to simplify things.
     params.p_dropout = 1.f - p_dropout;
@@ -704,7 +706,8 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         std::optional<at::Tensor> scheduler_metadata_,  // (b + 1)
         int64_t num_splits,
         std::optional<bool> pack_gqa_,
-        int64_t sm_margin
+        int64_t sm_margin,
+        int64_t common_len
         ) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
@@ -910,7 +913,8 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
                      window_size_right,
                      attention_chunk,
                      softcap,
-                     sm_margin);
+                     sm_margin,
+                     common_len);
     params.total_q = total_q;
     params.total_k = total_k;
     params.b_k = batch_size_k;
@@ -1705,7 +1709,8 @@ TORCH_LIBRARY(flash_attn_3, m) {
         "Tensor? scheduler_metadata = None,"
         "int num_splits = 0,"
         "bool? pack_gqa = None,"
-        "int sm_margin = 0) -> (Tensor(out!), Tensor, Tensor, Tensor)");
+        "int sm_margin = 0,"
+        "int common_len = 0) -> (Tensor(out!), Tensor, Tensor, Tensor)");
     m.def("bwd("
         "Tensor dout,"
         "Tensor q,"

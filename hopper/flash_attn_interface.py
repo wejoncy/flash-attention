@@ -56,6 +56,20 @@ def round_up_headdim(head_size: int) -> int:
     return 256
 
 
+def _get_kBlockN(headdim: int, is_causal: bool, is_local: bool) -> int:
+    """Calculate kBlockN based on tile_size.h logic for bf16/fp16."""
+    if headdim <= 64:
+        return 128 if (is_causal or is_local) else 192
+    elif headdim <= 96:
+        return 128 if is_local else 144
+    elif headdim <= 128:
+        return 128 if (is_causal or is_local) else 176
+    elif headdim <= 192:
+        return 96 if is_local else 128
+    else:
+        return 64 if is_local else 80
+
+
 @torch.library.custom_op("flash_attn_3::_flash_attn_forward", mutates_args=(), device_types="cuda")
 def _flash_attn_forward(
     q: torch.Tensor,
@@ -92,7 +106,16 @@ def _flash_attn_forward(
     num_splits: int = 1,
     pack_gqa: Optional[bool] = None,
     sm_margin: int = 0,
+    common_len: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Check common_len alignment
+    if common_len > 0:
+        headdim = k.shape[-1]
+        is_local = window_size_left >= 0 or window_size_right >= 0 or attention_chunk >= 1
+        kBlockN = _get_kBlockN(headdim, causal, is_local)
+        assert common_len % kBlockN == 0, \
+            f"common_len ({common_len}) must be a multiple of kBlockN ({kBlockN})"
+    
     q, k, k_new, v_new = [maybe_contiguous(x) for x in (q, k, k_new, v_new)]
     v = v.contiguous() if v.stride(-1) != 1 and v.stride(-3) != 1 else v
     cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new = [
@@ -139,6 +162,7 @@ def _flash_attn_forward(
         num_splits,
         pack_gqa,
         sm_margin,
+        common_len,
     )
 
     if out_accum is None:
@@ -665,6 +689,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         deterministic=False,
         sm_margin=0,
         return_softmax=False,
+        common_len=0,
     ):
         if softmax_scale is None:
             softmax_scale = (q.shape[-1] + (qv.shape[-1] if qv is not None else 0)) ** (-0.5)
@@ -695,6 +720,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             num_splits=num_splits,
             pack_gqa=pack_gqa,
             sm_margin=sm_margin,
+            common_len=common_len,
         )
         # ctx.save_for_backward(q, k, v, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
         ctx.save_for_backward(q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
@@ -909,6 +935,7 @@ def flash_attn_varlen_func(
     deterministic=False,
     sm_margin=0,
     return_attn_probs=False,
+    common_len=0,
 ):
     return FlashAttnVarlenFunc.apply(
         q,
@@ -932,6 +959,7 @@ def flash_attn_varlen_func(
         deterministic,
         sm_margin,
         return_attn_probs,
+        common_len,
     )
 
 

@@ -132,6 +132,10 @@ struct CollectiveEpilogueFwd {
         int32_t const nheads_kv;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
+        int const common_len = 0;//common prefix sharing
+        float o_scale = 1.0f;  // Output scale for FP8 quantization
+        float* o_blockscale_ptr = nullptr;  // Blockwise 1×128 FP8 output scales
+        int o_blockscale_stride = 0;
     };
 
     // Device side kernel params
@@ -155,6 +159,10 @@ struct CollectiveEpilogueFwd {
         TMA_O tma_store_O;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
+        int const common_len = 0;
+        float o_scale = 1.0f;  // Output scale for FP8 quantization
+        float* o_blockscale_ptr = nullptr;
+        int o_blockscale_stride = 0;
     };
 
     static Params
@@ -199,7 +207,8 @@ struct CollectiveEpilogueFwd {
                 args.ptr_LSE, args.stride_LSE, shape_LSE_packed, stride_LSE_packed,
                 args.ptr_LSE_partial, args.stride_LSE_partial, stride_LSE_partial_packed,
                 cutlass::FastDivmod(qhead_per_khead),
-                tma_store_O, args.cu_seqlens, args.seqused};
+                tma_store_O, args.cu_seqlens, args.seqused, args.common_len, args.o_scale,
+                args.o_blockscale_ptr, args.o_blockscale_stride};
     }
 
     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
@@ -234,10 +243,65 @@ struct CollectiveEpilogueFwd {
         Tensor sO = make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_o.data()), SmemLayoutO{});
         // Tensor sO_pi = cute::as_position_independent_swizzle_tensor(sO);
 
+        // Precompute seqlen info and coordinate tensors (needed for blockwise quant scale write)
+        flash::SeqlenInfo<Varlen, kBlockM> seqlen_info{bidb, size<0>(params.shape_O), params.cu_seqlens, params.seqused, params.common_len};
+        bool is_varlen = Varlen && params.cu_seqlens;
+        int offset_o = seqlen_info.offset;
+        int seqlen_o = seqlen_info.seqlen;
+
+        auto thread_mma = tiled_mma.get_thread_slice(thread_idx);
+        Tensor taccOcO = thread_mma.partition_C(cute::make_identity_tensor(select<0, 1>(TileShape_MNK_PV{})));
+        static_assert(decltype(size<0, 0>(taccOcO))::value == 2);
+        static_assert(decltype(size<0, 1>(taccOcO))::value == 2);
+        Tensor taccOcO_rowcol = make_tensor(taccOcO.data(), flash::convert_layout_acc_rowcol(taccOcO.layout()));
+        Tensor taccOcO_row = taccOcO_rowcol(_, _0{});
+        CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
+
         static constexpr bool NeedFP8Permute = FP8PermuteCol && (sizeof(Element) == 2 || sizeof(Element) == 4);
         // If we will possibly need tOrO in FP32, we'd want to permute tOrO before type conversion.
         // Otherwise we can permute after conversion.
         if constexpr (NeedFP8Permute && Split) { flash::permute_output_fp8_Vcolmajor(tOrO); }
+        // Blockwise 1×128 FP8 quantization: compute per-block amax, scale, and write scales to gmem
+        if (params.o_blockscale_ptr != nullptr) {
+            Tensor tOrO_rowcol = make_tensor(tOrO.data(), flash::convert_layout_acc_rowcol(tOrO.layout()));
+            static constexpr int kNBlocks = kHeadDimV / 128;
+            int const n_cols = size<1>(tOrO_rowcol);
+            int const cols_per_block = n_cols / kNBlocks;
+            #pragma unroll
+            for (int mi = 0; mi < size<0>(tOrO_rowcol); ++mi) {
+                #pragma unroll
+                for (int blk = 0; blk < kNBlocks; ++blk) {
+                    // Compute local amax for this 128-element block
+                    float amax = 0.0f;
+                    #pragma unroll
+                    for (int ni = blk * cols_per_block; ni < (blk + 1) * cols_per_block; ++ni) {
+                        amax = fmaxf(amax, fabsf(tOrO_rowcol(mi, ni)));
+                    }
+                    // Reduce amax across 4 threads sharing this row (lane%4 = {0,1,2,3})
+                    amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 1));
+                    amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 2));
+                    // Compute and apply inverse scale
+                    float const inv_scale = (amax > 0.f) ? 448.0f / amax : 0.f;
+                    #pragma unroll
+                    for (int ni = blk * cols_per_block; ni < (blk + 1) * cols_per_block; ++ni) {
+                        tOrO_rowcol(mi, ni) *= inv_scale;
+                    }
+                    // Write scale to gmem (one thread per row)
+                    int const row = m_block * kBlockM + get<0>(taccOcO_row(mi));
+                    if (get<1>(taccOcO_row(mi)) == 0 && row < seqlen_o) {
+                        float const scale = amax / 448.0f;
+                        int const scale_col = bidh * kNBlocks + blk;
+                        params.o_blockscale_ptr[(offset_o + row) * params.o_blockscale_stride + scale_col] = scale;
+                    }
+                }
+            }
+        } else if (params.o_scale != 1.0f) {
+            // Per-tensor FP8 output scaling
+            #pragma unroll
+            for (int i = 0; i < size(tOrO); ++i) {
+                tOrO(i) *= params.o_scale;
+            }
+        }
         Tensor tOrO_out = make_tensor_like<Element>(tOrO);
         flash::convert_type_out(tOrO, tOrO_out);
         if constexpr (NeedFP8Permute && !Split) { flash::permute_output_fp8_Vcolmajor(tOrO_out); }
@@ -272,21 +336,7 @@ struct CollectiveEpilogueFwd {
             }
         }
 
-        flash::SeqlenInfo<Varlen, kBlockM> seqlen_info{bidb, size<0>(params.shape_O), params.cu_seqlens, params.seqused};
-        bool is_varlen = Varlen && params.cu_seqlens;
-        int offset_o = seqlen_info.offset;
-        int seqlen_o = seqlen_info.seqlen;
         int warp_group_idx = __shfl_sync(0xFFFFFFFF, thread_idx / cutlass::NumThreadsPerWarpGroup, 0);
-
-        // Step 2: Write LSE from rmem -> gmem
-        auto thread_mma = tiled_mma.get_thread_slice(thread_idx);
-        // (MMA,MMA_M,MMA_K)
-        Tensor taccOcO = thread_mma.partition_C(cute::make_identity_tensor(select<0, 1>(TileShape_MNK_PV{})));
-        static_assert(decltype(size<0, 0>(taccOcO))::value == 2);
-        static_assert(decltype(size<0, 1>(taccOcO))::value == 2);
-        Tensor taccOcO_rowcol = make_tensor(taccOcO.data(), flash::convert_layout_acc_rowcol(taccOcO.layout()));
-        Tensor taccOcO_row = taccOcO_rowcol(_, _0{});
-        CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
 
         using PackGQA_t = flash::PackGQAManager<get<0>(TileShape_MNK_PV{}), get<1>(TileShape_MNK_PV{}), NumEpilogueThreads, Element>;
         using PackGQApartial_t = flash::PackGQAManager<get<0>(TileShape_MNK_PV{}), get<1>(TileShape_MNK_PV{}), NumEpilogueThreads, ElementPartial>;

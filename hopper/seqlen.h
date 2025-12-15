@@ -17,7 +17,7 @@ struct SeqlenInfo {
     int const seqlen;
 
     CUTLASS_DEVICE
-    SeqlenInfo(int const bidb, int const seqlen_static, int const* const cu_seqlens, int const* const seqused)
+    SeqlenInfo(int const bidb, int const seqlen_static, int const* const cu_seqlens, int const* const seqused, int const common_len = 0)
         : offset(!Varlen || cu_seqlens == nullptr ? 0 : cu_seqlens[bidb])
         , offset_padded(!Varlen || cu_seqlens == nullptr ? 0 : (cu_seqlens[bidb] + bidb * kBlock) / kBlock * kBlock)
         , seqlen(!Varlen
@@ -37,7 +37,8 @@ struct SeqlenInfoQK {
     CUTLASS_DEVICE
     SeqlenInfoQK(int const bidb, int const seqlen_q_static, int const seqlen_k_static,
                  int const* const cu_seqlens_q, int const* const cu_seqlens_k,
-                 int const* const seqused_q, int const* const seqused_k
+                 int const* const seqused_q, int const* const seqused_k,
+                 int const common_len = 0
                  )
         : offset_q(!Varlen || cu_seqlens_q == nullptr ? 0 : cu_seqlens_q[bidb])
         , offset_k(!Varlen || cu_seqlens_k == nullptr ? 0 : cu_seqlens_k[bidb])
@@ -51,7 +52,7 @@ struct SeqlenInfoQK {
                    : (seqused_q ? seqused_q[bidb] : (cu_seqlens_q ? cu_seqlens_q[bidb + 1] - cu_seqlens_q[bidb] : seqlen_q_static)))
         , seqlen_k(!Varlen
                    ? seqlen_k_static
-                   : (seqused_k ? seqused_k[bidb] : (cu_seqlens_k ? cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb] : seqlen_k_static)))
+                   : (seqused_k ? seqused_k[bidb] : (cu_seqlens_k ? cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb] + (bidb > 0 ? common_len : 0) : seqlen_k_static)))
     {
     }
 
@@ -70,7 +71,8 @@ struct SeqlenInfoQKNewK {
     SeqlenInfoQKNewK(int const bidb, int const seqlen_q_static, int const seqlen_k_static, int const shape_K_new_0,
                      int const* const cu_seqlens_q, int const* const cu_seqlens_k, int const* const cu_seqlens_k_new,
                      int const* const seqused_q, int const* const seqused_k, int const* const ptr_leftpad_k,
-                     int const* const seqlens_rotary
+                     int const* const seqlens_rotary,
+                     int const common_len = 0
                      )
         : leftpad_k(ptr_leftpad_k ? ptr_leftpad_k[bidb] : 0)
         , offset_q(!Varlen || cu_seqlens_q == nullptr ? 0 : cu_seqlens_q[bidb])
@@ -81,7 +83,7 @@ struct SeqlenInfoQKNewK {
                    : (seqused_q ? seqused_q[bidb] : (cu_seqlens_q ? cu_seqlens_q[bidb + 1] - cu_seqlens_q[bidb] : seqlen_q_static)))
         , seqlen_k_og(!Varlen
                       ? seqlen_k_static
-                      : (seqused_k ? seqused_k[bidb] : (cu_seqlens_k ? cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb] : seqlen_k_static)) - leftpad_k)
+                      : (seqused_k ? seqused_k[bidb] : (cu_seqlens_k ? cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb] + (bidb > 0 ? common_len : 0) : seqlen_k_static)) - leftpad_k)
         , seqlen_k_new(!AppendKV
                        ? 0
                        : (cu_seqlens_k_new ? cu_seqlens_k_new[bidb + 1] - cu_seqlens_k_new[bidb] : shape_K_new_0))

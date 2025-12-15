@@ -132,6 +132,7 @@ struct CollectiveEpilogueFwd {
         int32_t const nheads_kv;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
+        int const common_len = 0;
     };
 
     // Device side kernel params
@@ -155,6 +156,7 @@ struct CollectiveEpilogueFwd {
         TMA_O tma_store_O;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
+        int const common_len = 0;
     };
 
     static Params
@@ -199,7 +201,7 @@ struct CollectiveEpilogueFwd {
                 args.ptr_LSE, args.stride_LSE, shape_LSE_packed, stride_LSE_packed,
                 args.ptr_LSE_partial, args.stride_LSE_partial, stride_LSE_partial_packed,
                 cutlass::FastDivmod(qhead_per_khead),
-                tma_store_O, args.cu_seqlens, args.seqused};
+                tma_store_O, args.cu_seqlens, args.seqused, args.common_len};
     }
 
     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
@@ -272,7 +274,7 @@ struct CollectiveEpilogueFwd {
             }
         }
 
-        flash::SeqlenInfo<Varlen, kBlockM> seqlen_info{bidb, size<0>(params.shape_O), params.cu_seqlens, params.seqused};
+        flash::SeqlenInfo<Varlen, kBlockM> seqlen_info{bidb, size<0>(params.shape_O), params.cu_seqlens, params.seqused, params.common_len};
         bool is_varlen = Varlen && params.cu_seqlens;
         int offset_o = seqlen_info.offset;
         int seqlen_o = seqlen_info.seqlen;

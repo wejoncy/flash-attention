@@ -396,6 +396,7 @@ struct CollectiveMainloopFwdSm90 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const* const seqlens_rotary = nullptr;
+        int const common_len = 0;
     };
 
     // Device side kernel params
@@ -453,6 +454,7 @@ struct CollectiveMainloopFwdSm90 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const *const seqlens_rotary = nullptr;
+        int const common_len = 0;
     };
 
     static Params
@@ -564,7 +566,8 @@ struct CollectiveMainloopFwdSm90 {
                 !Split ? 1 : args.num_splits,
                 args.kv_batch_idx,
                 args.cu_seqlens_q, args.cu_seqlens_k, args.cu_seqlens_k_new,
-                args.seqused_q, args.seqused_k, args.leftpad_k, args.seqlens_rotary};
+                args.seqused_q, args.seqused_k, args.leftpad_k, args.seqlens_rotary,
+                args.common_len};
     }
 
     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
@@ -662,6 +665,9 @@ struct CollectiveMainloopFwdSm90 {
         Tensor gK_TMA = local_tile(domain_offset(make_coord(seqlen_info.offset_k, _0{}, _0{}), mK_TMA), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}, _));  // (N, K, _, _)
         Tensor gVt_TMA = local_tile(domain_offset(make_coord(_0{}, seqlen_info.offset_k, _0{}), mVt_TMA), select<1, 2>(TileShape_MNK_PV{}), make_coord(_0{}, _, _));  // (K, N, _, _)
 
+        Tensor gK_TMA_Common = local_tile(domain_offset(make_coord(_0{}, _0{}, _0{}), mK_TMA), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}, _));  // (N, K, _, _)
+        Tensor gVt_TMA_Common = local_tile(domain_offset(make_coord(_0{}, _0{}, _0{}), mVt_TMA), select<1, 2>(TileShape_MNK_PV{}), make_coord(_0{}, _, _));  // (K, N, _, _)
+
         auto block_tma_Q = params.tma_load_Q.get_slice(_0{});
         Tensor tQgQ = group_modes<0, 3>(block_tma_Q.partition_S(gQ));  // (TMA)
         Tensor tQsQ = group_modes<0, 3>(block_tma_Q.partition_D(sQ));  // (TMA)
@@ -673,6 +679,10 @@ struct CollectiveMainloopFwdSm90 {
         auto block_tma_V = params.tma_load_V.get_slice(cluster_local_block_id.x);
         Tensor tVgVt_TMA = group_modes<0, 3>(block_tma_V.partition_S(gVt_TMA));  // (TMA, k, batch)
         Tensor tVsVt_TMA = group_modes<0, 3>(block_tma_V.partition_D(sVt));  // (TMA, PIPE)
+
+        Tensor tKgK_TMA_Common = group_modes<0, 3>(block_tma_K.partition_S(gK_TMA_Common));  // (TMA, k, batch)
+        Tensor tVgVt_TMA_Common = group_modes<0, 3>(block_tma_V.partition_S(gVt_TMA_Common));  // (TMA, k, batch)
+
         auto [tQvgQv, tQvsQv] = [&] {
             if constexpr (HasQv) {
                 auto shape_Qv = make_shape(get<0>(params.shape_Q), params.headdim_v, get<2>(params.shape_Q), get<3>(params.shape_Q));
@@ -750,8 +760,23 @@ struct CollectiveMainloopFwdSm90 {
             pipeline_k.producer_acquire(smem_pipe_write);
             if constexpr (!PagedKVNonTMA) {
                 auto [n_block_idx, bidb_kv_idx] = paged_kv_manager.get_indices_for_K_TMA();
-                copy(params.tma_load_K.with(*pipeline_k.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
-                    tKgK_TMA(_, n_block_idx, bidb_kv_idx), tKsK_TMA(_, smem_pipe_write.index()));
+                // For bidb > 0 with common_len > 0: need to read from common region for first common_len/kBlockN blocks
+                // For bidb = 0: data layout is [Common, Unique0], offset_k = 0, use n_block directly
+                bool is_common = (params.common_len > 0 && bidb > 0 && n_block * kBlockN < params.common_len);
+                if (is_common) {
+                    // bidb > 0, reading common blocks: use gK_TMA_Common starting from physical position 0
+                    copy(params.tma_load_K.with(*pipeline_k.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tKgK_TMA_Common(_, n_block, bidb_kv_idx), tKsK_TMA(_, smem_pipe_write.index()));
+                } else if (params.common_len > 0 && bidb > 0) {
+                    // bidb > 0, reading unique blocks: offset_k points to unique data, subtract common blocks
+                    int idx = n_block - params.common_len / kBlockN;
+                    copy(params.tma_load_K.with(*pipeline_k.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tKgK_TMA(_, idx, bidb_kv_idx), tKsK_TMA(_, smem_pipe_write.index()));
+                } else {
+                    // bidb = 0 or no common_len: standard path, use n_block_idx directly
+                    copy(params.tma_load_K.with(*pipeline_k.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tKgK_TMA(_, n_block_idx, bidb_kv_idx), tKsK_TMA(_, smem_pipe_write.index()));
+                }
             } else {
                 constexpr bool Seqlenk_mask = decltype(need_seqlenk_masking_type)::value;
                 paged_kv_manager.template load_K<Seqlenk_mask>(n_block, sK_pi(_, _, smem_pipe_write.index()));
@@ -764,8 +789,23 @@ struct CollectiveMainloopFwdSm90 {
             pipeline_v_load.producer_acquire(smem_pipe_write);
             if constexpr (!PagedKVNonTMA) {
                 auto [n_block_idx, bidb_kv_idx] = paged_kv_manager.get_indices_for_V_TMA();
-                copy(params.tma_load_V.with(*pipeline_v_load.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
-                    tVgVt_TMA(_, n_block_idx, bidb_kv_idx), tVsVt_TMA(_, smem_pipe_write.index()));
+                // For bidb > 0 with common_len > 0: need to read from common region for first common_len/kBlockN blocks
+                // For bidb = 0: data layout is [Common, Unique0], offset_k = 0, use n_block directly
+                bool is_common = (params.common_len > 0 && bidb > 0 && n_block * kBlockN < params.common_len);
+                if (is_common) {
+                    // bidb > 0, reading common blocks: use gVt_TMA_Common starting from physical position 0
+                    copy(params.tma_load_V.with(*pipeline_v_load.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tVgVt_TMA_Common(_, n_block, bidb_kv_idx), tVsVt_TMA(_, smem_pipe_write.index()));
+                } else if (params.common_len > 0 && bidb > 0) {
+                    // bidb > 0, reading unique blocks: offset_k points to unique data, subtract common blocks
+                    int idx = n_block - params.common_len / kBlockN;
+                    copy(params.tma_load_V.with(*pipeline_v_load.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tVgVt_TMA(_, idx, bidb_kv_idx), tVsVt_TMA(_, smem_pipe_write.index()));
+                } else {
+                    // bidb = 0 or no common_len: standard path, use n_block_idx directly
+                    copy(params.tma_load_V.with(*pipeline_v_load.producer_get_barrier(smem_pipe_write), mcast_mask_kv, TMA::CacheHintSm90::EVICT_LAST),
+                        tVgVt_TMA(_, n_block_idx, bidb_kv_idx), tVsVt_TMA(_, smem_pipe_write.index()));
+                }
             } else {
                 constexpr bool Seqlenk_mask = decltype(need_seqlenk_masking_type)::value;
                 paged_kv_manager.template load_V<Seqlenk_mask>(n_block, sVcpasync(_, _, smem_pipe_write.index()));
@@ -964,6 +1004,7 @@ struct CollectiveMainloopFwdSm90 {
         cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord,
         SharedStorage& shared_storage
         ) {
+        
         static_assert(is_rmem<FrgTensorO>::value, "O tensor must be rmem resident.");
         static constexpr int kBlockM = get<0>(TileShape_MNK{});
         static constexpr int kBlockN = get<1>(TileShape_MNK{});
@@ -1363,9 +1404,11 @@ struct CollectiveMainloopFwdSm90 {
            cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord,
            SharedStorage& shared_storage
            ) {
+        
         static_assert(is_rmem<FrgTensorO>::value, "O tensor must be rmem resident.");
         // can't use auto [m_block, ...] = block_coord since structured binding cannot be captured in lambda
         int const m_block = get<0>(block_coord);
+        int const bidh = get<1>(block_coord);
         int const bidb = get<2>(block_coord);
         int const split_idx = get<3>(block_coord);
         auto [n_block_min, n_block_max] = BlockMN_t::get_n_block_min_max(

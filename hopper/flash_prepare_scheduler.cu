@@ -55,7 +55,8 @@ __global__ void prepare_varlen_num_blocks_kernel(
         bool enable_pdl,
         bool is_causal,
         bool packgqa,
-        int max_kvblocks_in_l2) {
+        int max_kvblocks_in_l2,
+        const int common_len) {
 
     static constexpr int kNumBatchPerWarp = cutlass::NumThreadsPerWarp - 1;
     static constexpr int kSmemSize = 1;
@@ -244,7 +245,8 @@ void prepare_varlen_num_blocks(Flash_fwd_params &params, cudaStream_t stream, bo
                 enable_pdl,
                 params.is_causal,
                 packgqa,
-                max_kvblocks_in_l2);
+                max_kvblocks_in_l2,
+                params.common_len);
         });
     });
 }

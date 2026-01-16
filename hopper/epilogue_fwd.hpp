@@ -132,7 +132,8 @@ struct CollectiveEpilogueFwd {
         int32_t const nheads_kv;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
-        int const common_len = 0;
+        int const common_len = 0;//common prefix sharing
+        float o_scale = 1.0f;  // Output scale for FP8 quantization
     };
 
     // Device side kernel params
@@ -157,6 +158,7 @@ struct CollectiveEpilogueFwd {
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
         int const common_len = 0;
+        float o_scale = 1.0f;  // Output scale for FP8 quantization
     };
 
     static Params
@@ -201,7 +203,7 @@ struct CollectiveEpilogueFwd {
                 args.ptr_LSE, args.stride_LSE, shape_LSE_packed, stride_LSE_packed,
                 args.ptr_LSE_partial, args.stride_LSE_partial, stride_LSE_partial_packed,
                 cutlass::FastDivmod(qhead_per_khead),
-                tma_store_O, args.cu_seqlens, args.seqused, args.common_len};
+                tma_store_O, args.cu_seqlens, args.seqused, args.common_len, args.o_scale};
     }
 
     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
@@ -240,6 +242,13 @@ struct CollectiveEpilogueFwd {
         // If we will possibly need tOrO in FP32, we'd want to permute tOrO before type conversion.
         // Otherwise we can permute after conversion.
         if constexpr (NeedFP8Permute && Split) { flash::permute_output_fp8_Vcolmajor(tOrO); }
+        // Apply output scale for FP8 quantization (multiply before type conversion)
+        if (params.o_scale != 1.0f) {
+            #pragma unroll
+            for (int i = 0; i < size(tOrO); ++i) { 
+                tOrO(i) *= params.o_scale; 
+            }
+        }
         Tensor tOrO_out = make_tensor_like<Element>(tOrO);
         flash::convert_type_out(tOrO, tOrO_out);
         if constexpr (NeedFP8Permute && !Split) { flash::permute_output_fp8_Vcolmajor(tOrO_out); }

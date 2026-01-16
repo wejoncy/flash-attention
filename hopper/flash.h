@@ -71,6 +71,8 @@ struct Flash_fwd_params : public Qkv_params {
     float scale_softmax;
     float softcap;
     int common_len;
+    float o_scale; // For FP8 output scaling (multiply before conversion to FP8)
+
 
     // array of length b+1 holding starting offset of each sequence.
     int * __restrict__ cu_seqlens_q;

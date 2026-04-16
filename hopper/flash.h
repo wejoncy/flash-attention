@@ -71,7 +71,7 @@ struct Flash_fwd_params : public Qkv_params {
     float scale_softmax;
     float softcap;
     int common_len;
-    float o_scale; // For FP8 output scaling (multiply before conversion to FP8)
+    float o_scale = 1.0f; // For FP8 output scaling (multiply before conversion to FP8)
     float* __restrict__ o_blockscale_ptr = nullptr;  // Blockwise 1×128 FP8 output scales [total_tokens, num_heads * ceil(head_dim/128)]
     int o_blockscale_stride = 0;                     // Stride along token dimension for o_blockscale_ptr
 

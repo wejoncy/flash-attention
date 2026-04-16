@@ -35,6 +35,9 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 
 PACKAGE_NAME = "flash_attn_3"
 
+# Create package directory if it doesn't exist
+os.makedirs(os.path.join(this_dir, PACKAGE_NAME), exist_ok=True)
+
 BASE_WHEEL_URL = "https://github.com/Dao-AILab/flash-attention/releases/download/{tag_name}/{wheel_name}"
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels

@@ -35,8 +35,11 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 
 PACKAGE_NAME = "flash_attn_3"
 
-# Create package directory if it doesn't exist
+# Create package directory and __init__.py if they don't exist
 os.makedirs(os.path.join(this_dir, PACKAGE_NAME), exist_ok=True)
+pkg_init = os.path.join(this_dir, PACKAGE_NAME, "__init__.py")
+if not os.path.isfile(pkg_init):
+    shutil.copy(os.path.join(this_dir, "__init__.py"), pkg_init)
 
 BASE_WHEEL_URL = "https://github.com/Dao-AILab/flash-attention/releases/download/{tag_name}/{wheel_name}"
 
@@ -55,7 +58,7 @@ DISABLE_LOCAL = os.getenv("FLASH_ATTENTION_DISABLE_LOCAL", "FALSE") == "TRUE"
 DISABLE_SOFTCAP = os.getenv("FLASH_ATTENTION_DISABLE_SOFTCAP", "FALSE") == "TRUE"
 DISABLE_PACKGQA = os.getenv("FLASH_ATTENTION_DISABLE_PACKGQA", "FALSE") == "TRUE"
 DISABLE_FP16 = os.getenv("FLASH_ATTENTION_DISABLE_FP16", "TRUE") == "TRUE"
-DISABLE_FP8 = os.getenv("FLASH_ATTENTION_DISABLE_FP8", "TRUE") == "TRUE"
+DISABLE_FP8 = os.getenv("FLASH_ATTENTION_DISABLE_FP8", "FALSE") == "TRUE"
 DISABLE_VARLEN = os.getenv("FLASH_ATTENTION_DISABLE_VARLEN", "FALSE") == "TRUE"
 DISABLE_CLUSTER = os.getenv("FLASH_ATTENTION_DISABLE_CLUSTER", "FALSE") == "TRUE"
 DISABLE_HDIM64 = os.getenv("FLASH_ATTENTION_DISABLE_HDIM64", "FALSE") == "TRUE"

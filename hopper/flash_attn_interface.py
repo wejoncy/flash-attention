@@ -53,7 +53,10 @@ def round_up_headdim(head_size: int) -> int:
     if not CONFIG["build_flags"]["FLASHATTENTION_DISABLE_HDIM256"]:
         if head_size <= 256:
             return 256
-    return 256
+    if not CONFIG["build_flags"].get("FLASHATTENTION_DISABLE_HDIM512", True):
+        if head_size <= 512:
+            return 512
+    return 512
 
 
 def _get_kBlockN(headdim: int, is_causal: bool, is_local: bool) -> int:

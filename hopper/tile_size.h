@@ -39,8 +39,9 @@ constexpr std::tuple<int, int, bool, bool> tile_size_fwd_sm90(
             return {128, is_local ? 64 : 80, true, true};  // 128 x 80 hits the limit of smem
         } else {
             // headdim > 256 (e.g., 512): LargeHeadDimV requires kBlockM <= 64, MmaPV_is_RS = false
-            // kBlockN=32 with kStages=2 gives ~197KB SMEM for d=512 BF16 (fits in 228KB)
-            return {64, 32, false, false};
+            // kBlockN=64 with kStages=1 gives ~200KB SMEM for d=512 BF16 (fits in 228KB)
+            // Doubling kBlockN halves iteration count, reducing barrier/softmax overhead
+            return {64, 64, false, false};
         }
     } else {
         if (headdim <= 64) {

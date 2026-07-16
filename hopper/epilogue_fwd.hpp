@@ -302,6 +302,12 @@ struct CollectiveEpilogueFwd {
                 tOrO(i) *= params.o_scale;
             }
         }
+        // 1-byte (FP8) output: the post-conversion permute below only supports 2/4-byte, so for
+        // FP8-in/FP8-out permute the FP32 accumulator here instead — after blockwise/o_scale
+        // (which reduce over columns, so must precede the permute) and before conversion.
+        if constexpr (FP8PermuteCol && sizeof(Element) == 1 && !Split) {
+            flash::permute_output_fp8_Vcolmajor(tOrO);
+        }
         Tensor tOrO_out = make_tensor_like<Element>(tOrO);
         flash::convert_type_out(tOrO, tOrO_out);
         if constexpr (NeedFP8Permute && !Split) { flash::permute_output_fp8_Vcolmajor(tOrO_out); }
